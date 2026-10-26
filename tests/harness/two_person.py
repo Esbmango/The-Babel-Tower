@@ -1,0 +1,93 @@
+import asyncio, re, math, json, sys
+from playwright.async_api import async_playwright
+PORT = int(sys.argv[1]); TAG = 'ai' if PORT == 8771 else 'nokey'
+async def main():
+    errs = []
+    async with async_playwright() as p:
+        b = await p.chromium.launch(args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'])
+        ctx = await b.new_context(viewport={'width': 1512, 'height': 982}, accept_downloads=True)
+        pg = await ctx.new_page(); pg.on('pageerror', lambda e: errs.append(str(e))); pg.on('console', lambda m: errs.append('console:'+m.text) if m.type in ('error','info') else None)
+        await pg.goto(f'http://127.0.0.1:{PORT}/fake.html?debug'); await pg.wait_for_timeout(600)
+        await pg.get_by_role('radio', name=re.compile('Free canvas')).click()
+        if TAG == 'ai':
+            boxes = pg.locator('.consent-group').nth(4).locator('input[type=checkbox]')
+            for i in range(await boxes.count()):
+                if await boxes.nth(i).is_enabled(): await boxes.nth(i).check()
+        rec = pg.locator('label', has_text='Story Film').locator('input')
+        print('record label present:', await rec.count(), 'checked:', await rec.is_checked() if await rec.count() else None)
+        await pg.get_by_role('button', name=re.compile(r'Mouse \/ touch')).click(); await pg.wait_for_timeout(800)
+        print('toolbar:', ' | '.join([t.strip() for t in await pg.locator('.controls > button, .controls > .more > button').all_inner_texts()]))
+        print('data panel visible (expect 0):', await pg.locator('.panel').count())
+        print('bridge placeholder:', (await pg.locator('.bridge').inner_text()).replace('\n', ' | ')[:200])
+        box = await pg.locator('.frame').bounding_box()
+        async def wiggle(n):
+            for i in range(n):
+                t = i * 0.04
+                await pg.mouse.move(box['x'] + box['width'] * (0.5 - 0.3 * abs(math.cos(t))), box['y'] + box['height'] * (0.45 + 0.25 * math.sin(t * 1.3))); await pg.wait_for_timeout(12)
+        await wiggle(120)
+        # 1) A answers with a phrase (zh), via the phrases picker
+        await pg.locator('.composer.A .phrases summary').click()
+        await pg.locator('.composer.A .phrase', has_text='妈妈做的饭').click()
+        await pg.locator('.composer.A').get_by_role('button', name='Send', exact=True).click()
+        await pg.wait_for_timeout(900 if TAG == 'ai' else 300)
+        print('1 bridge A→B:', (await pg.locator('.bridge').inner_text()).replace('\n', ' | ')[:300])
+        await pg.screenshot(path=f'out/{TAG}-1-bridge.png')
+        # 2) B reads, marks "I follow", responds with free text (en)
+        await pg.locator('.bridge-side.B').get_by_role('button', name='I follow').click()
+        await pg.locator('.bridge-side.B').get_by_role('button', name=re.compile('respond')).click()
+        print('2 reply chip B:', await pg.locator('.composer.B .reply-chip').inner_text())
+        await pg.locator('.composer.B textarea').fill('My grandmother garden makes me feel at home'); await pg.locator('.composer.B textarea').press('Enter')
+        await pg.wait_for_timeout(900 if TAG == 'ai' else 300)
+        print('2 bridge B→A:', (await pg.locator('.bridge').inner_text()).replace('\n', ' | ')[:300])
+        print('2 reply chip cleared:', await pg.locator('.composer.B .reply-chip').count())
+        # 3) A writes again; B marks it unclear; A sends these words as a gift; B catches, answers on it, textures, sends back; A places
+        await pg.locator('.composer.A textarea').fill('自由就是家'); await pg.locator('.composer.A textarea').press('Enter'); await pg.wait_for_timeout(900 if TAG == 'ai' else 400)
+        await pg.locator('.bridge-side.B').get_by_role('button', name='unclear').click()
+        print('3 speaker flag:', (await pg.locator('.bridge-side.A').inner_text()).replace('\n', ' | ')[-120:])
+        await pg.locator('.bridge-side.A').get_by_role('button', name=re.compile('send these words')).click()
+        await pg.wait_for_selector('.composer.B .gift-line.incoming button')
+        await pg.locator('.composer.B').get_by_role('button', name='Catch').click()
+        await pg.locator('.composer.B .gift-reply input').fill('Me too.'); await pg.locator('.composer.B .gift-reply input').press('Enter')
+        await pg.locator('.composer.B').get_by_role('button', name='+ my texture').click()
+        await pg.wait_for_timeout(400)
+        print('3 gift captions:', json.dumps(await pg.evaluate("window.__babel.gifts.snapshot().map(g => [g.state, g.holder, g.originMessageId, g.captions.map(c => c.by + ':' + c.text)])"), ensure_ascii=False))
+        print('3 bridge after gift reply:', (await pg.locator('.bridge').inner_text()).replace('\n', ' | ')[:240])
+        await pg.locator('.composer.B').get_by_role('button', name=re.compile('send back')).click()
+        await pg.wait_for_selector('.composer.A .gift-line.incoming button')
+        await pg.locator('.composer.A').get_by_role('button', name='Catch').click()
+        await pg.locator('.composer.A').get_by_role('button', name='place').click()
+        if TAG == 'ai':
+            talk = pg.locator('.composer.B .btn.talk')
+            print('talk button:', await talk.count())
+            tb = await talk.bounding_box()
+            await pg.mouse.move(tb['x'] + 10, tb['y'] + 10); await pg.mouse.down(); await pg.wait_for_timeout(1500); await pg.mouse.up()
+            await pg.wait_for_timeout(6500)
+            print('4 voice msg in bridge:', (await pg.locator('.bridge').inner_text()).replace('\n', ' | ')[:240])
+        await pg.get_by_role('button', name='Sanctuary').click()
+        await wiggle(250)
+        # film frame check: record canvas pixels near subtitle panel
+        await pg.screenshot(path=f'out/{TAG}-2-canvas.png')
+        film = await pg.evaluate("""() => { const e = window.__babel; const c = e.recordTarget || e.recCanvas || null; return c ? c.toDataURL('image/png') : null }""")
+        if film:
+            import base64; open(f'out/{TAG}-film-frame.png', 'wb').write(base64.b64decode(film.split(',')[1])); print('film frame saved')
+        else: print('film frame: no record canvas handle')
+        await pg.get_by_role('button', name='End session').click()
+        try: await pg.wait_for_selector('.result', timeout=15000)
+        except Exception: print('NO RESULT; errors', errs); await pg.screenshot(path=f'out/{TAG}-fail.png'); raise
+        await pg.wait_for_timeout(10); await pg.wait_for_timeout(1000)
+        print('result h2:', await pg.locator('.result h2').all_inner_texts())
+        print('transcript:', (await pg.locator('.transcript').inner_text()).replace('\n', ' | ')[:700])
+        print('stats:', (await pg.locator('.comm-portrait .stat-grid').first.inner_text()).replace('\n', ' | '))
+        print('summary en:'); await pg.locator('.summary.data').first.inner_text()
+        await pg.get_by_role('button', name='English').click(); print((await pg.locator('.summary.data').inner_text())[:900])
+        print('video present:', await pg.locator('.art-portrait video').count())
+        await pg.screenshot(path=f'out/{TAG}-3-result.png', full_page=True)
+        async with pg.expect_download() as d: await pg.get_by_role('button', name=re.compile('Export report')).click()
+        dl = await d.value; path = f'out/{TAG}-report.json'; await dl.save_as(path)
+        r = json.load(open(path)); print('report keys:', [k for k in ['transcript', 'responses', 'selfReports', 'translationSources'] if k in r])
+        print('responses:', json.dumps(r['responses'])[:300]); print('selfReports:', r['selfReports']); print('sources:', r['translationSources'])
+        async with pg.expect_download() as d: await pg.get_by_role('button', name=re.compile('Download Story Film')).click()
+        dl = await d.value; await dl.save_as(f'out/{TAG}-film.webm'); print('film saved')
+        await b.close()
+    print('errors', errs)
+asyncio.run(main())
