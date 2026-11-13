@@ -1,9 +1,6 @@
 # The Babel — A Place Between Us
 
 *Two Languages. Two Stories. One Shared Place.*
-
-Boston University DS+X Hackathon 2026 — Art & Design Track.
-
 The Babel explores a simple question: can two people who do not share a common language create a sense of belonging together?
 
 Inspired by the story of the Tower of Babel, where differences in language interrupted collective creation, our project reimagines what happens when those differences become the foundation of a new shared experience.
